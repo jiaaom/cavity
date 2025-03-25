@@ -1,0 +1,2 @@
+#!/bin/bash
+icpx -I${INTEL_SHMEM_INSTALLPATH}/include -L${INTEL_SHMEM_INSTALLPATH}/lib -fsycl -std=c++17 cavityIntelSHMEM.cpp -o cavityIntelSHMEM -Wl,--copy-dt-needed-entries -lmpi -lze_loader -ldl -lishmem -fsycl-targets=spir64_gen -Xsycl-target-backend=spir64_gen "-device pvc"
