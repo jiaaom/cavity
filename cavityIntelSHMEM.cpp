@@ -1,7 +1,8 @@
 /*
 *
 * Author: Aristotle Martin
-* Intel SHMEM (ISHMEM) code implementing a 2D lid-driven cavity flow.
+* SYCL implementation of 2D cavity flow with Intel SHMEM (ISHMEM)
+* 
 * D2Q9 lattice
 * 
 */
@@ -15,10 +16,11 @@
 #include <iomanip>
 #include <sys/time.h>
 #include <stddef.h>
+#include <mpi.h>
 
 #define _STENCILSIZE_ 9
-#define _LX_ 2048
-#define _LY_ 2048
+#define _LX_ 4096
+#define _LY_ 4096
 #define _NDIMS_ 2
 #define _INVALID_ -1
 #define _HALO_ 1
@@ -108,9 +110,9 @@ void collideStreamKernel(double* distr, double* distrAdv, int* stencilOpPt, doub
                 int nbrI = myI + icx[iNbr];
                 int nbrJ = myJ + icy[iNbr];
                 if (my_pe < npes - 1 && nbrJ == my_jmax_ext) { // put to nbr upper if not at top
-                    ishmem_double_put(&haloBuff[msgSize+_STENCILSIZE_*nbrI+iNbr], &distrAdv[nbrInd], 1, nbr_upper);
+                    ishmem_double_p(&haloBuff[msgSize+_STENCILSIZE_*nbrI+iNbr], distrAdv[nbrInd], nbr_upper);
                 } else if (my_pe > 0 && nbrJ == my_jmin_ext) { // put to lower nbr if not at bottom
-                    ishmem_double_put(&haloBuff[_STENCILSIZE_*nbrI+iNbr], &distrAdv[nbrInd], 1, nbr_lower);
+		            ishmem_double_p(&haloBuff[_STENCILSIZE_*nbrI+iNbr], distrAdv[nbrInd], nbr_lower);
                 }
             }
         }
@@ -227,7 +229,7 @@ int main() {
     // allocate the halo buffer in symmetric memory
     double* haloBuff = (double*)ishmem_malloc(2*msgSize*sizeof(double));
 
-    int maxT = 10000; // total number of iterations
+    int maxT = 1; // total number of iterations
 
     double uLid = 0.05; // horizontal lid velocity
     double Re = 100.0; // Reynolds number
@@ -238,12 +240,13 @@ int main() {
     /* setup GPU buffers */
     double* distr;
     double* distrAdv;
+    double* distrHost;
     int* stencilOpPt;
     int icx[_STENCILSIZE_] = {0,1,0,-1,0,1,-1,-1,1};
     int icy[_STENCILSIZE_] = {0,0,1,0,-1,1,1,-1,-1}; 
     int opp[_STENCILSIZE_] = {0,3,4,1,2,7,8,5,6};
     double w[_STENCILSIZE_] = {4.0/9.0,1.0/9.0,1.0/9.0,1.0/9.0,1.0/9.0,1.0/36.0,1.0/36.0,1.0/36.0,1.0/36.0};
-    
+
     int* icx_gpu = sycl::malloc_shared<int>(_STENCILSIZE_, q);
     int* icy_gpu = sycl::malloc_shared<int>(_STENCILSIZE_, q);
     int* opp_gpu = sycl::malloc_shared<int>(_STENCILSIZE_, q);
@@ -253,10 +256,14 @@ int main() {
     q.memcpy(opp_gpu,&opp[0],_STENCILSIZE_*sizeof(int)).wait();
     q.memcpy(w_gpu,&w[0],_STENCILSIZE_*sizeof(double)).wait();
 
-    distr = sycl::malloc_shared<double>(_LX_ * my_ly * _STENCILSIZE_, q);
-    // allocate distrAdv in symmetric memory
-    distrAdv = (double*)ishmem_malloc(_LX_ * my_ly * _STENCILSIZE_ *sizeof(double));
     stencilOpPt = sycl::malloc_shared<int>(_LX_ * my_ly * _STENCILSIZE_, q);
+
+    // host allocations (for I/O)
+    distrHost = sycl::malloc_host<double>(_LX_ * my_ly * _STENCILSIZE_, q);
+
+    // allocatations in symmetric memory
+    distr = (double*)ishmem_malloc(_LX_ * my_ly * _STENCILSIZE_ *sizeof(double));
+    distrAdv = (double*)ishmem_malloc(_LX_ * my_ly * _STENCILSIZE_ *sizeof(double));
 
     int numpts = my_ly * _LX_;
 
@@ -274,6 +281,7 @@ int main() {
                                         w_gpu,item);
     }).wait();
     for (int t=0; t<maxT; t++) {
+        //if (my_pe == 0) std::cout << "timestep: " << t << std::endl;
         q.parallel_for(sycl::nd_range<1>(dimGrid[2] * dimBlock[2], dimBlock[2]), [=](sycl::nd_item<1> item) {
                 collideStreamKernel(distr,distrAdv,stencilOpPt,
                                         haloBuff,msgSize,nbr_upper,
@@ -283,6 +291,7 @@ int main() {
                                         npes,icx_gpu,icy_gpu,
                                         w_gpu,omega,item);
         }).wait();
+        ishmem_barrier_all();
         q.parallel_for(sycl::nd_range<1>(dimGrid[2] * dimBlock[2], dimBlock[2]), [=](sycl::nd_item<1> item) {
             zouHeBCKernel(distr,distrAdv,stencilOpPt,
                                     haloBuff,msgSize,nbr_upper,
@@ -295,7 +304,6 @@ int main() {
         }).wait();
         std::swap(distr,distrAdv);
     }
-    ishmem_barrier_all();
     double tEnd = shmem_wtime();
 
     double tInterval = tEnd - tStart;
@@ -315,6 +323,7 @@ int main() {
         std::cout << "Average runtime: " << timers_h[2] << std::endl;
     }
     // write output
-    writeOutput(distr,icx,icy,my_pe,my_jmin_own,my_jmax_own,my_ly);
+    q.memcpy(distrHost, distr, _LX_ * my_ly * _STENCILSIZE_ *sizeof(double)).wait_and_throw();
+    writeOutput(distrHost,icx,icy,my_pe,my_jmin_own,my_jmax_own,my_ly);
     ishmem_finalize();
 }   
