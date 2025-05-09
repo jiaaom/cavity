@@ -17,8 +17,8 @@
 #include <stddef.h>
 
 #define _STENCILSIZE_ 9
-#define _LX_ 2048
-#define _LY_ 2048
+#define _LX_ 4096
+#define _LY_ 4096
 #define _NDIMS_ 2
 #define _INVALID_ -1
 #define _HALO_ 1
@@ -368,7 +368,7 @@ int main(int argc, char** argv) {
     std::cout << "Rank: " << myRank << ", my_jmin_own = " << my_jmin_own << ", my_jmax_own = " << my_jmax_own << std::endl;
     std::cout << "Rank: " << myRank << ", my_jmin_ext = " << my_jmin_ext << ", my_jmax_ext = " << my_jmax_ext << std::endl;
 
-    int maxT = 10000; // total number of iterations
+    int maxT = 1; // total number of iterations
 
     double uLid = 0.05; // horizontal lid velocity
     double Re = 100.0; // Reynolds number
