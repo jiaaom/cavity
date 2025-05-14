@@ -1,0 +1,1 @@
+icpx -I/lus/flare/projects/TwinBlood/axm3/software/ishmem/build/include -L/lus/flare/projects/TwinBlood/axm3/software/ishmem/build/src -lishmem  -fsycl -std=c++17 cavityHybridMPIISHMEM.cpp -o cavityHybridMPIISHMEM -Wl,--copy-dt-needed-entries -lmpi -lze_loader -ldl -lishmem -fsycl-targets=spir64_gen -Xsycl-target-backend=spir64_gen "-device pvc"
