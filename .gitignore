@@ -1,0 +1,146 @@
+# Lattice Boltzmann Method Cavity Flow - Git Ignore File
+
+# =============================================================================
+# OUTPUT FILES - Simulation Results
+# =============================================================================
+# LBM simulation output files (can be large, regenerated on each run)
+out*.txt
+out_*.txt
+*.dat
+*.vtk
+*.csv
+
+# Temporary output and log files
+*.log
+*.tmp
+
+# =============================================================================
+# COMPILED EXECUTABLES
+# =============================================================================
+# Serial version
+cavity
+cavity_debug
+cavity_profile
+
+# Multi-GPU versions
+cavityIntelMPI
+cavityCUDAMPI
+cavityHIPMPI
+cavityHybridMPIISHMEM
+cavityIntelSHMEM
+cavityNVSHEM
+cavityRocSHEM
+
+# Generic executable patterns
+*.exe
+*.out
+a.out
+
+# =============================================================================
+# BUILD ARTIFACTS
+# =============================================================================
+# Object files
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Profiling files
+gmon.out
+*.gcda
+*.gcno
+*.gcov
+
+# =============================================================================
+# COMPILER AND BUILD SYSTEM FILES
+# =============================================================================
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+
+# CUDA compilation
+*.ptx
+*.cubin
+*.fatbin
+
+# Intel compiler
+*.optrpt
+
+# =============================================================================
+# HPC SYSTEM FILES
+# =============================================================================
+# Job scheduler files (SLURM, PBS, etc.)
+*.sbatch
+*.pbs
+slurm-*.out
+*.e[0-9]*
+*.o[0-9]*
+
+# Core dumps
+core.*
+*.core
+
+# =============================================================================
+# DEVELOPMENT ENVIRONMENT FILES
+# =============================================================================
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# =============================================================================
+# DOCUMENTATION AND BACKUP FILES
+# =============================================================================
+# Backup files
+*.bak
+*.backup
+*.old
+
+# LaTeX (if documentation is added)
+*.aux
+*.log
+*.toc
+*.pdf
+*.dvi
+*.fls
+*.fdb_latexmk
+
+# =============================================================================
+# PERFORMANCE ANALYSIS FILES
+# =============================================================================
+# NVIDIA profiling
+*.nvprof
+*.nvvp
+*.qdrep
+profile_*.txt
+
+# Intel profiling
+amplxe-*/
+*.amplxe
+
+# Timing and benchmark results
+timing_*.txt
+benchmark_*.txt
+performance_*.txt
