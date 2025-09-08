@@ -58,39 +58,6 @@ gmon.out
 *.gcda
 *.gcno
 *.gcov
-
-# =============================================================================
-# COMPILER AND BUILD SYSTEM FILES
-# =============================================================================
-# CMake
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
-Makefile
-*.cmake
-
-# CUDA compilation
-*.ptx
-*.cubin
-*.fatbin
-
-# Intel compiler
-*.optrpt
-
-# =============================================================================
-# HPC SYSTEM FILES
-# =============================================================================
-# Job scheduler files (SLURM, PBS, etc.)
-*.sbatch
-*.pbs
-slurm-*.out
-*.e[0-9]*
-*.o[0-9]*
-
-# Core dumps
-core.*
-*.core
-
 # =============================================================================
 # DEVELOPMENT ENVIRONMENT FILES
 # =============================================================================
