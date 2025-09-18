@@ -18,8 +18,8 @@ out_*.txt
 # COMPILED EXECUTABLES
 # =============================================================================
 # Serial version
-cavity
-cavity_debug
+./cavity
+./cavity_debug
 cavity_profile
 
 # Multi-GPU versions
