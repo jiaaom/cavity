@@ -446,8 +446,8 @@ int main() {
         }
     }
     
-    cout << "Simulation completed!" << endl;
-    
+    cout << "Simulation completed! " << _LX_ * _LY_ * maxT << " total MFLUP" << endl; // divide this by the execution time in microsec.
+     
     // =============================================================================
     // OUTPUT RESULTS
     // =============================================================================

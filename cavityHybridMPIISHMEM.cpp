@@ -742,4 +742,5 @@ int main(int argc, char** argv) {
     // write output
     writeOutput(distr_host,icx,icy,myRank,my_jmin_ext,my_jmin_own,my_jmax_own,my_ly,my_ly_ext,commSHMEM);
     ishmem_finalize();
+    std::cout << "Simulation completed! " << _LX_ * _LY_ * maxT << " total MFLUP" << std::endl; 
 }   

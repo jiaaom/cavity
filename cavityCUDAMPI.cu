@@ -798,6 +798,6 @@ int main(int argc, char** argv) {
     // CLEANUP AND MPI FINALIZATION
     // =============================================================================
     MPI_Finalize();  // Clean shutdown of MPI environment
-    
+    std::cout << "Simulation completed! " << _LX_ * _LY_ * maxT << " total MFLUP" << std::endl; 
     return 0;  // Successful program termination
 }   

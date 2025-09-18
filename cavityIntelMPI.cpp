@@ -483,4 +483,6 @@ int main(int argc, char** argv) {
     // write output
     writeOutput(distr,icx,icy,myRank,my_jmin_ext,my_jmin_own,my_jmax_own,my_ly_ext);
     MPI_Finalize();
+    std::cout << "Simulation completed! " << _LX_ * _LY_ * maxT << " total MFLUP" << std::endl; 
+    
 }   

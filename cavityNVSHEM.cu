@@ -299,4 +299,5 @@ int main() {
     // write output
     writeOutput(distr,icx,icy,my_pe,my_jmin_own,my_jmax_own,my_ly);
     // nvshmem_finalize();
+    std::cout << "Simulation completed! " << _LX_ * _LY_ * maxT << " total MFLUP" << std::endl; 
 }   

@@ -326,4 +326,5 @@ int main() {
     q.memcpy(distrHost, distr, _LX_ * my_ly * _STENCILSIZE_ *sizeof(double)).wait_and_throw();
     writeOutput(distrHost,icx,icy,my_pe,my_jmin_own,my_jmax_own,my_ly);
     ishmem_finalize();
+    std::cout << "Simulation completed! " << _LX_ * _LY_ * maxT << " total MFLUP" << std::endl; 
 }   
