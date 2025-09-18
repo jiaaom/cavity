@@ -11,11 +11,25 @@ SYCL_CXX = icpx
 SYCL_FLAGS = -fsycl -std=c++17 -O3
 
 # CUDA compiler (CUDA 13.0 with correct paths for your system)
-CUDA_HOME = /usr/local/cuda-13.0
+CUDA_HOME = /usr/local/cuda
 NVCC = $(CUDA_HOME)/bin/nvcc
 CUDA_FLAGS = -std=c++11 -O3 -arch=sm_86
-CUDA_INCLUDES = -I/usr/include/openmpi-x86_64
-CUDA_LIBS = -L/usr/lib64/openmpi/lib -lmpi
+
+# Detect machine architecture
+ARCH := $(shell uname -m)
+
+# Set OpenMPI path based on architecture
+ifeq ($(ARCH), x86_64)
+    OPENMPI_PATH = /usr/lib64/openmpi
+else ifeq ($(ARCH), aarch64)
+    OPENMPI_PATH = /usr/lib/aarch64-linux-gnu/openmpi
+else
+    $(warning "Unsupported architecture $(ARCH). OpenMPI paths may be incorrect.")
+    OPENMPI_PATH = /usr/lib64/openmpi
+endif
+
+CUDA_INCLUDES = -I$(OPENMPI_PATH)/include
+CUDA_LIBS = -L$(OPENMPI_PATH)/lib -lmpi
 
 # HIP compiler  
 HIP_CXX = hipcc
@@ -23,6 +37,7 @@ HIP_FLAGS = -std=c++11 -O3
 
 # Source files
 SERIAL_SRC = cavity.cpp
+CUDA_SRC = cavityCUDA.cu
 INTEL_MPI_SRC = cavityIntelMPI.cpp
 CUDA_MPI_SRC = cavityCUDAMPI.cu
 HIP_MPI_SRC = cavityHIPMPI.hip.cpp
@@ -33,6 +48,7 @@ ROC_SHMEM_SRC = cavityRocSHEM.hip.cpp
 
 # Executables
 SERIAL_EXE = cavity
+CUDA_EXE = cavityCUDA
 INTEL_MPI_EXE = cavityIntelMPI
 CUDA_MPI_EXE = cavityCUDAMPI
 HIP_MPI_EXE = cavityHIPMPI
@@ -53,6 +69,16 @@ cavity: $(SERIAL_SRC)
 # Build all available implementations
 all: cavity
 
+# Single GPU CUDA (requires CUDA toolkit)
+cuda: $(CUDA_SRC)
+	@echo "Compiling single GPU CUDA implementation..."
+	@echo "Using CUDA 13.0 at $(CUDA_HOME)"
+	@echo "Note: Requires CUDA toolkit (no MPI needed)"
+	export PATH=$(CUDA_HOME)/bin:$$PATH && \
+	export LD_LIBRARY_PATH=$(CUDA_HOME)/lib64:$$LD_LIBRARY_PATH && \
+	$(NVCC) $(CUDA_FLAGS) $< -o $(CUDA_EXE)
+	@echo "Successfully built $(CUDA_EXE)"
+
 # Intel SYCL + MPI (requires oneAPI environment)
 intel-mpi: $(INTEL_MPI_SRC)
 	@echo "Compiling Intel SYCL + MPI implementation..."
@@ -65,8 +91,8 @@ cuda-mpi: $(CUDA_MPI_SRC)
 	@echo "Compiling CUDA + MPI implementation..."
 	@echo "Using CUDA 13.0 at $(CUDA_HOME)"
 	@echo "Note: Requires CUDA toolkit and MPI"
-	export PATH=$(CUDA_HOME)/bin:/usr/lib64/openmpi/bin:$$PATH && \
-	export LD_LIBRARY_PATH=$(CUDA_HOME)/lib64:/usr/lib64/openmpi/lib:$$LD_LIBRARY_PATH && \
+	export PATH=$(CUDA_HOME)/bin:$(OPENMPI_PATH)/bin:$$PATH && \
+	export LD_LIBRARY_PATH=$(CUDA_HOME)/lib64:$(OPENMPI_PATH)/lib:$$LD_LIBRARY_PATH && \
 	$(NVCC) $(CUDA_FLAGS) $(CUDA_INCLUDES) $(CUDA_LIBS) $< -o $(CUDA_MPI_EXE)
 	@echo "Successfully built $(CUDA_MPI_EXE)"
 
@@ -84,25 +110,52 @@ intel-shmem: $(INTEL_SHMEM_SRC)
 	$(SYCL_CXX) $(SYCL_FLAGS) $< -o $(INTEL_SHMEM_EXE) -lishmem
 	@echo "Successfully built $(INTEL_SHMEM_EXE)"
 
+# NVSHMEM (requires NVSHMEM library)
+nvshmem: $(NVSHMEM_SRC)
+	@echo "Compiling NVSHMEM implementation..."
+	@echo "Note: Requires NVSHMEM library and CUDA toolkit"
+	export PATH=$(CUDA_HOME)/bin:$(OPENMPI_PATH)/bin:$$PATH && \
+	export LD_LIBRARY_PATH=$(CUDA_HOME)/lib64:$(OPENMPI_PATH)/lib:$$LD_LIBRARY_PATH && \
+	$(NVCC) $(CUDA_FLAGS) $(CUDA_INCLUDES) $< -o $(NVSHMEM_EXE) -lnvshmem -lcuda -lcudart
+	@echo "Successfully built $(NVSHMEM_EXE)"
+
 # Run the serial cavity simulation
 run: cavity
 	@echo "Running cavity flow simulation..."
 	./$(SERIAL_EXE)
 	@echo "Results written to out.txt"
 
+# Run the single GPU CUDA simulation
+run-cuda: cuda
+	@echo "Running single GPU CUDA cavity flow simulation..."
+	@echo "Grid size: 1024x1024, optimized for GPU execution!"
+	export PATH=$(CUDA_HOME)/bin:$$PATH && \
+	export LD_LIBRARY_PATH=$(CUDA_HOME)/lib64:$$LD_LIBRARY_PATH && \
+	./$(CUDA_EXE)
+	@echo "Results written to out.txt"
+
 # Run the CUDA+MPI simulation on 2 GPUs
 run-cuda-mpi: cuda-mpi
 	@echo "Running CUDA+MPI cavity flow simulation on 2 GPUs..."
 	@echo "Grid size: 1024x1024, much larger than serial version!"
-	export PATH=$(CUDA_HOME)/bin:/usr/lib64/openmpi/bin:$$PATH && \
-	export LD_LIBRARY_PATH=$(CUDA_HOME)/lib64:/usr/lib64/openmpi/lib:$$LD_LIBRARY_PATH && \
-	/usr/lib64/openmpi/bin/mpirun --mca btl tcp,self -np 2 ./$(CUDA_MPI_EXE)
+	export PATH=$(CUDA_HOME)/bin:$(OPENMPI_PATH)/bin:$$PATH && \
+	export LD_LIBRARY_PATH=$(CUDA_HOME)/lib64:$(OPENMPI_PATH)/lib:$$LD_LIBRARY_PATH && \
+	mpirun --mca btl tcp,self -np 2 ./$(CUDA_MPI_EXE)
+	@echo "Results written to out_0.txt (GPU 0) and out_1.txt (GPU 1)"
+
+# Run the NVSHMEM simulation on 2 GPUs
+run-nvshmem: nvshmem
+	@echo "Running NVSHMEM cavity flow simulation on 2 GPUs..."
+	@echo "Grid size: 1024x1024, SHMEM-based communication"
+	export PATH=$(CUDA_HOME)/bin:$(OPENMPI_PATH)/bin:$$PATH && \
+	export LD_LIBRARY_PATH=$(CUDA_HOME)/lib64:$(OPENMPI_PATH)/lib:$$LD_LIBRARY_PATH && \
+	nvshmrun -np 2 ./$(NVSHMEM_EXE)
 	@echo "Results written to out_0.txt (GPU 0) and out_1.txt (GPU 1)"
 
 # Clean compiled binaries
 clean:
 	@echo "Cleaning compiled binaries..."
-	rm -f $(SERIAL_EXE) $(INTEL_MPI_EXE) $(CUDA_MPI_EXE) $(HIP_MPI_EXE) 
+	rm -f $(SERIAL_EXE) $(CUDA_EXE) $(INTEL_MPI_EXE) $(CUDA_MPI_EXE) $(HIP_MPI_EXE)
 	rm -f $(HYBRID_EXE) $(INTEL_SHMEM_EXE) $(NVSHMEM_EXE) $(ROC_SHMEM_EXE)
 	rm -f *.o
 	@echo "Clean complete"
@@ -123,14 +176,18 @@ help:
 	@echo ""
 	@echo "Available targets:"
 	@echo "  cavity        - Build serial cavity flow simulation (default)"
+	@echo "  cuda          - Build single GPU CUDA version"
 	@echo "  intel-mpi     - Build Intel SYCL + MPI version"
 	@echo "  cuda-mpi      - Build CUDA + MPI version"
 	@echo "  hip-mpi       - Build HIP + MPI version"
 	@echo "  intel-shmem   - Build Intel SHMEM version"
+	@echo "  nvshmem       - Build NVSHMEM version"
 	@echo ""
 	@echo "Utility targets:"
 	@echo "  run           - Compile and run serial simulation"
+	@echo "  run-cuda      - Compile and run single GPU CUDA simulation"
 	@echo "  run-cuda-mpi  - Compile and run CUDA+MPI on 2 GPUs"
+	@echo "  run-nvshmem   - Compile and run NVSHMEM on 2 GPUs"
 	@echo "  clean         - Remove compiled binaries"
 	@echo "  clean-output  - Remove simulation output files"
 	@echo "  clean-all     - Remove binaries and output files"
@@ -139,8 +196,12 @@ help:
 	@echo "Examples:"
 	@echo "  make cavity                    # Build serial version"
 	@echo "  make run                       # Build and run serial version"
+	@echo "  make cuda                      # Build single GPU CUDA version"
+	@echo "  make run-cuda                  # Build and run single GPU CUDA"
 	@echo "  make cuda-mpi                  # Build CUDA+MPI version"
 	@echo "  make run-cuda-mpi              # Build and run CUDA+MPI on 2 GPUs"
+	@echo "  make nvshmem                   # Build NVSHMEM version"
+	@echo "  make run-nvshmem               # Build and run NVSHMEM on 2 GPUs"
 	@echo "  make clean                     # Clean compiled files"
 	@echo ""
 	@echo "Note: Parallel versions require appropriate environments:"

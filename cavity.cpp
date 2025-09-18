@@ -26,6 +26,7 @@
 #include <cassert>
 #include <iomanip>
 #include <vector>
+#include <sys/time.h>
 
 // Lattice Boltzmann Method constants
 #define _STENCILSIZE_ 9    // Number of velocity directions in D2Q9 lattice
@@ -429,24 +430,37 @@ int main() {
     // MAIN SIMULATION LOOP
     // =============================================================================
     cout << "Starting simulation..." << endl;
-    
+
+    // Timing
+    struct timeval start_time, end_time;
+    gettimeofday(&start_time, NULL);
+
     for (int t=0; t<maxT; t++) {
         // Step 1: Collision + Streaming (bulk fluid evolution)
         collideStream(distr,distrAdv,&icx[0],&icy[0],&w[0],&stencilOpPt[0],omega);
-        
+
         // Step 2: Apply boundary conditions (moving lid)
         zouHeBC(distrAdv,uLid);
-        
+
         // Step 3: Swap arrays for next iteration (ping-pong scheme)
         std::swap(distr,distrAdv);
-        
+
         // Progress output
         if (t % 1000 == 0) {
             cout << "Completed " << t << " / " << maxT << " time steps" << endl;
         }
     }
-    
-    cout << "Simulation completed! " << _LX_ * _LY_ * maxT << " total MFLUP" << endl; // divide this by the execution time in microsec.
+
+    gettimeofday(&end_time, NULL);
+    double elapsed_time = (end_time.tv_sec - start_time.tv_sec) +
+                         (end_time.tv_usec - start_time.tv_usec) / 1000000.0;
+
+    long total_updates = (long)_LX_ * _LY_ * maxT;
+    double mflups = total_updates / elapsed_time / 1000000.0;
+
+    cout << "Simulation completed!" << endl;
+    cout << "Elapsed time: " << elapsed_time << " seconds" << endl;
+    cout << "Performance: " << mflups << " MFLUPS" << endl;
      
     // =============================================================================
     // OUTPUT RESULTS
