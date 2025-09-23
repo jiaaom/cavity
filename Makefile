@@ -90,6 +90,24 @@ run: cavity
 	./$(SERIAL_EXE)
 	@echo "Results written to out.txt"
 
+
+# OpenMP multithreaded LBM cavity flow
+OMP_SRC = cavity_omp.cpp
+OMP_EXE = cavity_omp
+
+# Build OpenMP version
+run-omp: cavity_omp.cpp
+	@echo "Compiling OpenMP multithreaded LBM cavity flow simulation..."
+	$(CXX) $(CXXFLAGS) -fopenmp $< -o cavity_omp
+	@echo "Successfully built cavity_omp"
+	@echo "Running OpenMP simulation..."
+	@if [ -z "$(NTHREADS)" ]; then \
+	    echo "No NTHREADS specified, defaulting to 4 threads"; \
+	    ./cavity_omp 4; \
+	else \
+	    ./cavity_omp $(NTHREADS); \
+	fi
+
 # Run the CUDA+MPI simulation on 2 GPUs
 run-cuda-mpi: cuda-mpi
 	@echo "Running CUDA+MPI cavity flow simulation on 2 GPUs..."
