@@ -788,6 +788,11 @@ int main(int argc, char** argv) {
         std::cout << "Max runtime: " << timers[0] << std::endl;      // Slowest GPU
         std::cout << "Min runtime: " << timers[1] << std::endl;      // Fastest GPU
         std::cout << "Average runtime: " << timers[2] << std::endl;  // Average across GPUs
+
+        long long total_updates = static_cast<long long>(_LX_) * _LY_ * maxT;
+        double mflups = timers[0] > 0.0 ? (total_updates / (timers[0] * 1.0e6)) : 0.0;
+        std::cout << "Total lattice updates: " << total_updates << std::endl;
+        std::cout << "Performance: " << mflups << " MFLUPS" << std::endl;
     }
     
     // Each GPU writes its portion of results to separate output file
@@ -798,6 +803,8 @@ int main(int argc, char** argv) {
     // CLEANUP AND MPI FINALIZATION
     // =============================================================================
     MPI_Finalize();  // Clean shutdown of MPI environment
-    std::cout << "Simulation completed! " << _LX_ * _LY_ * maxT << " total MFLUP" << std::endl; 
+    if (myRank == 0) {
+        std::cout << "Simulation completed!" << std::endl;
+    }
     return 0;  // Successful program termination
-}   
+}  

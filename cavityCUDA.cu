@@ -37,8 +37,8 @@
 
 // Lattice Boltzmann Method constants
 #define _STENCILSIZE_ 9    // Number of velocity directions in D2Q9 lattice
-#define _LX_ 128           // Grid size in x-direction (small size for testing)
-#define _LY_ 128           // Grid size in y-direction
+#define _LX_ 1024           // Grid size in x-direction (small size for testing)
+#define _LY_ 1024           // Grid size in y-direction
 #define _NDIMS_ 2          // Number of spatial dimensions
 #define _INVALID_ -1       // Invalid grid index marker
 
@@ -277,7 +277,7 @@ int main() {
     // =============================================================================
     // SIMULATION PARAMETERS
     // =============================================================================
-    int maxT = 10000;        // Total time steps
+    int maxT = 100;        // Total time steps
     double uLid = 0.05;      // Lid velocity
     double Re = 100.0;       // Reynolds number
 
