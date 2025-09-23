@@ -28,8 +28,36 @@ else
     OPENMPI_PATH = /usr/lib64/openmpi
 endif
 
-CUDA_INCLUDES = -I$(OPENMPI_PATH)/include
-CUDA_LIBS = -L$(OPENMPI_PATH)/lib -lmpi
+# Resolve MPI include path; prefer user override via OPENMPI_INCLUDE if set
+OPENMPI_INCLUDE ?=
+OPENMPI_INCLUDE_SEARCH := $(if $(OPENMPI_INCLUDE),$(OPENMPI_INCLUDE) ,) \
+                           $(OPENMPI_PATH)/include \
+                           /usr/include/openmpi-$(ARCH) \
+                           /usr/include/openmpi_$(ARCH) \
+                           /usr/include/openmpi-$(shell uname -m) \
+                           /usr/include/openmpi-x86_64
+OPENMPI_INCLUDE_DIR := $(firstword $(foreach dir,$(OPENMPI_INCLUDE_SEARCH),$(if $(wildcard $(dir)/mpi.h),$(dir))))
+ifeq ($(strip $(OPENMPI_INCLUDE_DIR)),)
+    $(warning "Could not automatically locate mpi.h; defaulting to $(OPENMPI_PATH)/include")
+    OPENMPI_INCLUDE_DIR := $(OPENMPI_PATH)/include
+endif
+
+# Resolve MPI library path; allow user override via OPENMPI_LIB if set
+OPENMPI_LIB ?=
+OPENMPI_LIB_SEARCH := $(if $(OPENMPI_LIB),$(OPENMPI_LIB) ,) \
+                       $(OPENMPI_PATH)/lib \
+                       $(OPENMPI_PATH)/lib64 \
+                       /usr/lib64/openmpi/lib \
+                       /usr/lib64 \
+                       /usr/lib
+OPENMPI_LIB_DIR := $(firstword $(foreach dir,$(OPENMPI_LIB_SEARCH),$(if $(wildcard $(dir)/libmpi.*),$(dir))))
+ifeq ($(strip $(OPENMPI_LIB_DIR)),)
+    $(warning "Could not automatically locate libmpi.*; defaulting to $(OPENMPI_PATH)/lib")
+    OPENMPI_LIB_DIR := $(OPENMPI_PATH)/lib
+endif
+
+CUDA_INCLUDES = -I$(OPENMPI_INCLUDE_DIR)
+CUDA_LIBS = -L$(OPENMPI_LIB_DIR) -lmpi
 
 # HIP compiler  
 HIP_CXX = hipcc
