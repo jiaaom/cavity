@@ -107,6 +107,15 @@ cuda: $(CUDA_SRC)
 	$(NVCC) $(CUDA_FLAGS) $< -o $(CUDA_EXE)
 	@echo "Successfully built $(CUDA_EXE)"
 
+cudafp32: cavityCUDA32.cu
+	@echo "Compiling single GPU CUDA implementation..."
+	@echo "Using CUDA at $(CUDA_HOME)"
+	@echo "Note: Requires CUDA toolkit (no MPI needed)"
+	export PATH=$(CUDA_HOME)/bin:$$PATH && \
+	export LD_LIBRARY_PATH=$(CUDA_HOME)/lib64:$$LD_LIBRARY_PATH && \
+	$(NVCC) $(CUDA_FLAGS) $< -o cavityCUDA32
+	@echo "Successfully built cavityCUDA32"
+
 # Intel SYCL + MPI (requires oneAPI environment)
 intel-mpi: $(INTEL_MPI_SRC)
 	@echo "Compiling Intel SYCL + MPI implementation..."
