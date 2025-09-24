@@ -4,6 +4,7 @@
 #include <cassert>
 #include <iomanip>
 #include <vector>
+#include <sys/time.h>
 #include <omp.h> // OpenMP header
 
 #define _STENCILSIZE_ 9
@@ -167,12 +168,27 @@ int main(int argc, char* argv[]) {
     initializeFluid(distr,distrAdv,w,numThreads);
 
     cout << "Starting simulation..." << endl;
+
+    struct timeval start_time, end_time;
+    gettimeofday(&start_time, NULL);
+
     for (int t=0; t<maxT; t++) {
         collideStream(distr,distrAdv,icx,icy,w,&stencilOpPt[0],omega,numThreads);
         zouHeBC(distrAdv,uLid);
         swap(distr,distrAdv);
         if (t % 1000 == 0) cout << "Completed " << t << " / " << maxT << " time steps" << endl;
     }
+
+    gettimeofday(&end_time, NULL);
+    double elapsed_time = (end_time.tv_sec - start_time.tv_sec) +
+                          (end_time.tv_usec - start_time.tv_usec) / 1000000.0;
+
+    long long total_updates = static_cast<long long>(_LX_) * _LY_ * maxT;
+    double mflups = total_updates / elapsed_time / 1000000.0;
+
+    cout << "Simulation completed!" << endl;
+    cout << "Elapsed time: " << elapsed_time << " seconds" << endl;
+    cout << "Performance: " << mflups << " MFLUPS" << endl;
 
     cout << "Writing results to out.txt..." << endl;
     writeOutput(distr,icx,icy,numThreads);
