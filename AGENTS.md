@@ -1,34 +1,23 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `cavity.cpp`: Serial D2Q9 LBM cavity solver (reference).
-- `cavityCUDAMPI.cu`: CUDA + MPI implementation (multi‑GPU).
-- `cavityHIPMPI.hip.cpp`, `cavityIntelMPI.cpp`, `cavityIntelSHMEM.cpp`, `cavityHybridMPIISHMEM.cpp`, `cavityNVSHEM.cu`, `cavityRocSHEM.hip.cpp`: Alternate backends.
-- `Makefile`: Unified build and run targets.
-- `env_*.sh`, `compile*.sh`, `ishmrun`: Environment helpers and cluster scripts.
-- Outputs: `out.txt` (serial), `out_0.txt`, `out_1.txt` (CUDA+MPI).
+Core solver lives in `cavity.cpp` (serial D2Q9 reference) with GPU backends split across `cavityCUDAMPI.cu`, `cavityCUDA.cu`, `cavityHIPMPI.hip.cpp`, and SHMEM/MPI variants. Helper build and launch scripts reside in the repo root (`Makefile`, `compile*.sh`, `env_*.sh`, `ishmrun`). Generated outputs default to `out.txt` for serial runs and `out_*.txt` for multi-rank GPU runs; keep derived data out of version control. Place new analysis or instrumentation tools under a dedicated subdirectory (e.g., `tools/`) to avoid cluttering the root.
 
 ## Build, Test, and Development Commands
-- Build serial: `make cavity`
-- Run serial: `make run`
-- Build CUDA+MPI: `make cuda-mpi` (requires CUDA + MPI)
-- Run CUDA+MPI (2 ranks): `make run-cuda-mpi`
-- Debug/Profiling: `make debug`, `make profile`
-- Clean: `make clean`, `make clean-output`, `make clean-all`
-Notes: Source the right env first (`source env_lassen.sh`, `env_frontier.sh`, or `env_aurora.sh`). GPU runs may require `mpirun` availability and device visibility.
+- `make cavity` / `make run`: build and execute the serial baseline.
+- `make cuda-mpi` / `make run-cuda-mpi`: build and run the CUDA+MPI path (2 ranks by default).
+- `make debug`, `make profile`: compile with extra diagnostics or profiling instrumentation.
+- `make clean`, `make clean-output`, `make clean-all`: remove build artifacts and generated outputs.
+Source the appropriate environment first (`source env_lassen.sh`, `env_frontier.sh`, or `env_aurora.sh`) so compilers and MPI launchers are available.
 
-# Goal
+## Coding Style & Naming Conventions
+Use 4-space indentation, K&R braces (`int foo() {`), and descriptive camelCase for functions with ALL_CAPS macros and lattice constants. Favor `std::vector` over raw pointers unless performance dictates otherwise, and keep device kernels grouped by functionality. Mirror existing file suffixes when adding a backend (`.cu`, `.hip.cpp`, etc.) and document assumptions near the kernel launch site.
 
-My goal is to explore the possibility for hardware acceleration (by FPGA or ASIC) for LBM algorithm used here.
-Therefore, I'm generally interested in analyzing the following aspects:
+## Testing Guidelines
+No automated test harness is provided; validate changes by running the baseline (`make run`) and comparing `out.txt` against a trusted snapshot, then exercise the relevant accelerator path. Record performance metrics such as MLUPS or runtime deltas when touching numerics. For regression-style checks, stash reference outputs under `tests/data/` (gitignored) and use `diff` to confirm bitwise or tolerance-based agreement.
 
-- Parallelism Opportunities: Examine whether the algorithm has inherent parallelism - data parallelism (same operation on multiple data), task parallelism (different operations running concurrently), or pipeline parallelism (streaming data through sequential stages).
-- Data Dependencies: Analyze the dependency graph of your algorithm. Algorithms with minimal data dependencies between operations are easier to parallelize. Look for loop-carried dependencies that might limit parallelization opportunities.
+## Commit & Pull Request Guidelines
+Write concise, imperative commit subjects ("Improve CUDA halo exchange"), followed by a brief body explaining motivation and validation. Group unrelated changes into separate commits. Pull requests should summarize algorithmic changes, list tested build targets, and call out performance or precision impacts. Link to design notes or issue IDs where applicable and include profiler traces or timing tables when arguing for hardware-specific optimizations.
 
-- Memory Access Patterns: Regular, predictable access patterns (like sequential or strided access) work well in hardware. Random access patterns can be problematic due to memory hierarchy limitations.
-- Data Locality: Algorithms that reuse data frequently (temporal locality) or access nearby memory locations (spatial locality) are more suitable for hardware acceleration with local memory hierarchies.
-- Memory Bandwidth Requirements: Calculate whether your algorithm is compute-bound or memory-bound. Memory-bound algorithms may not benefit significantly from acceleration unless you can improve memory bandwidth utilization.
-- Streaming vs. Random Access: Streaming algorithms that process data in a pipeline fashion are often ideal for hardware implementation.
-
-- Precision Flexibility: Can your algorithm tolerate reduced precision (fixed-point vs. floating-point)? Hardware implementations often benefit from custom precision arithmetic.
-- Numerical Stability: Ensure the algorithm remains numerically stable with potential precision reductions or different arithmetic implementations.
+## Performance & Acceleration Notes
+When proposing FPGA/ASIC pathways, describe pipeline stages (collision, streaming, boundary) and dataflow requirements. Highlight memory access regularity, tile sizes, and precision choices so reviewers can judge feasibility alongside existing GPU implementations.

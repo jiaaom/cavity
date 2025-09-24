@@ -37,6 +37,43 @@ All implementations follow the same LBM algorithm structure:
 
 ## Build System
 
+### Local Development with Makefile
+For local development and testing, use the included Makefile:
+
+```bash
+# Build serial implementation (default)
+make cavity
+
+# Build and run serial version
+make run
+
+# Build CUDA+MPI version (requires CUDA toolkit)
+make cuda-mpi
+
+# Build and run CUDA+MPI on 2 GPUs
+make run-cuda-mpi
+
+# Build Intel SYCL+MPI version (requires oneAPI)
+make intel-mpi
+
+# Build HIP+MPI version (requires ROCm)
+make hip-mpi
+
+# Build Intel SHMEM version
+make intel-shmem
+
+# Clean compiled binaries
+make clean
+
+# Clean output files
+make clean-output
+
+# Show help with all available targets
+make help
+```
+
+The Makefile handles environment setup and proper compiler flags automatically for each implementation.
+
 ### Environment Setup Scripts
 Each HPC system has its own environment setup script:
 - `env_aurora.sh` - Intel Aurora system (PVC GPUs, oneAPI, Intel SHMEM)
@@ -113,3 +150,10 @@ When adding new implementations:
 - All implementations should produce identical results when run with the same parameters
 - Serial implementation (`cavity.cpp`) serves as the reference
 - Output verification can be done by comparing `out.txt` files across implementations
+- MPI implementations create separate output files per rank (e.g., `out_0.txt`, `out_1.txt`)
+
+### Common Commands
+- **Build and test locally**: `make run` (builds and runs serial version)
+- **Quick CUDA test**: `make run-cuda-mpi` (requires CUDA toolkit and 2 GPUs)
+- **Lint/TypeCheck**: No specific commands - this is a research codebase focused on performance portability
+- **Clean workspace**: `make clean-all` (removes binaries and output files)
