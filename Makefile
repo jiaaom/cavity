@@ -66,6 +66,7 @@ HIP_FLAGS = -std=c++11 -O3
 # Source files
 SERIAL_SRC = cavity.cpp
 CUDA_SRC = cavityCUDA.cu
+CUDA16_SRC = cavityCUDA16.cu
 INTEL_MPI_SRC = cavityIntelMPI.cpp
 CUDA_MPI_SRC = cavityCUDAMPI.cu
 HIP_MPI_SRC = cavityHIPMPI.hip.cpp
@@ -77,6 +78,7 @@ ROC_SHMEM_SRC = cavityRocSHEM.hip.cpp
 # Executables
 SERIAL_EXE = cavity
 CUDA_EXE = cavityCUDA
+CUDA16_EXE = cavityCUDA16
 INTEL_MPI_EXE = cavityIntelMPI
 CUDA_MPI_EXE = cavityCUDAMPI
 HIP_MPI_EXE = cavityHIPMPI
@@ -106,6 +108,16 @@ cuda: $(CUDA_SRC)
 	export LD_LIBRARY_PATH=$(CUDA_HOME)/lib64:$$LD_LIBRARY_PATH && \
 	$(NVCC) $(CUDA_FLAGS) $< -o $(CUDA_EXE)
 	@echo "Successfully built $(CUDA_EXE)"
+
+# Single GPU CUDA FP16 (requires CUDA toolkit)
+cuda16: $(CUDA16_SRC)
+	@echo "Compiling single GPU CUDA FP16 implementation..."
+	@echo "Using CUDA 13.0 at $(CUDA_HOME)"
+	@echo "Note: Requires CUDA toolkit (no MPI needed)"
+	export PATH=$(CUDA_HOME)/bin:$$PATH && \
+	export LD_LIBRARY_PATH=$(CUDA_HOME)/lib64:$$LD_LIBRARY_PATH && \
+	$(NVCC) $(CUDA_FLAGS) $< -o $(CUDA16_EXE)
+	@echo "Successfully built $(CUDA16_EXE)"
 
 # Intel SYCL + MPI (requires oneAPI environment)
 intel-mpi: $(INTEL_MPI_SRC)
@@ -179,6 +191,15 @@ run-cuda: cuda
 	./$(CUDA_EXE)
 	@echo "Results written to out.txt"
 
+# Run the single GPU CUDA FP16 simulation
+run-cuda16: cuda16
+	@echo "Running single GPU CUDA FP16 cavity flow simulation..."
+	@echo "Grid size: 1024x1024, optimized for GPU execution!"
+	export PATH=$(CUDA_HOME)/bin:$$PATH && \
+	export LD_LIBRARY_PATH=$(CUDA_HOME)/lib64:$$LD_LIBRARY_PATH && \
+	./$(CUDA16_EXE)
+	@echo "Results written to out.txt"
+
 # Run the CUDA+MPI simulation on 2 GPUs
 run-cuda-mpi: cuda-mpi
 	@echo "Running CUDA+MPI cavity flow simulation on 2 GPUs..."
@@ -200,7 +221,7 @@ run-nvshmem: nvshmem
 # Clean compiled binaries
 clean:
 	@echo "Cleaning compiled binaries..."
-	rm -f $(SERIAL_EXE) $(CUDA_EXE) $(INTEL_MPI_EXE) $(CUDA_MPI_EXE) $(HIP_MPI_EXE)
+	rm -f $(SERIAL_EXE) $(CUDA_EXE) $(CUDA16_EXE) $(INTEL_MPI_EXE) $(CUDA_MPI_EXE) $(HIP_MPI_EXE)
 	rm -f $(HYBRID_EXE) $(INTEL_SHMEM_EXE) $(NVSHMEM_EXE) $(ROC_SHMEM_EXE)
 	rm -f *.o
 	@echo "Clean complete"
@@ -222,6 +243,7 @@ help:
 	@echo "Available targets:"
 	@echo "  cavity        - Build serial cavity flow simulation (default)"
 	@echo "  cuda          - Build single GPU CUDA version"
+	@echo "  cuda16        - Build single GPU CUDA FP16 version"
 	@echo "  intel-mpi     - Build Intel SYCL + MPI version"
 	@echo "  cuda-mpi      - Build CUDA + MPI version"
 	@echo "  hip-mpi       - Build HIP + MPI version"
@@ -231,6 +253,7 @@ help:
 	@echo "Utility targets:"
 	@echo "  run           - Compile and run serial simulation"
 	@echo "  run-cuda      - Compile and run single GPU CUDA simulation"
+	@echo "  run-cuda16    - Compile and run single GPU CUDA FP16 simulation"
 	@echo "  run-cuda-mpi  - Compile and run CUDA+MPI on 2 GPUs"
 	@echo "  run-nvshmem   - Compile and run NVSHMEM on 2 GPUs"
 	@echo "  clean         - Remove compiled binaries"
