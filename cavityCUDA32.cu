@@ -1,411 +1,267 @@
-/*
-* CUDA Lattice Boltzmann Method (LBM) Implementation for 2D Lid-Driven Cavity Flow
-*
-* Author: Aristotle Martin (CUDA port)
-*
-* This code implements a single-GPU CUDA version of the 2D lid-driven cavity flow
-* simulation using the Lattice Boltzmann Method with a D2Q9 lattice structure.
-* Based on the serial CPU implementation but optimized for GPU execution.
-*
-* CUDA IMPLEMENTATION STRATEGY:
-* - Main computational kernels (collision+streaming, boundary conditions) run on GPU
-* - Memory is allocated on GPU using standard cudaMalloc (not unified memory)
-* - Explicit data transfers between host and device as needed
-* - Thread blocks sized for optimal GPU occupancy
-*
-* Algorithm Overview:
-* 1. Initialize fluid distributions to equilibrium values
-* 2. For each time step:
-*    a. GPU Collision+Streaming kernel: Relax distributions and move to neighbors
-*    b. GPU Boundary condition kernel: Apply Zou-He BC for moving lid
-*    c. Swap distribution arrays (ping-pong scheme)
-* 3. Transfer results to host and output macroscopic quantities
-*
-* D2Q9 Lattice:
-* - 9 velocity directions (including rest particle)
-* - 2D square lattice with nearest and next-nearest neighbor connections
-* - Velocity directions: (0,0), (±1,0), (0,±1), (±1,±1)
-*/
+// CUDA LBM D2Q9, FP32 storage, SoA layout, pull-streaming, fixed Zou–He top lid
+// Minimal, clear, benchmarkable.
+
 #include <cuda.h>
-#include <algorithm>
+
+#include <cassert>
+#include <cmath>
+#include <cstdio>
+#include <vector>
 #include <iostream>
 #include <fstream>
-#include <cassert>
 #include <iomanip>
-#include <cmath>
 #include <sys/time.h>
 
-// Lattice Boltzmann Method constants
-#define _STENCILSIZE_ 9    // Number of velocity directions in D2Q9 lattice
-#define _LX_ 1024           // Grid size in x-direction (small size for testing)
-#define _LY_ 1024           // Grid size in y-direction
-#define _NDIMS_ 2          // Number of spatial dimensions
-#define _INVALID_ -1       // Invalid grid index marker
+#ifndef LX
+#define LX 1024
+#endif
+#ifndef LY
+#define LY 1024
+#endif
+#ifndef BLOCK_SIZE
+#define BLOCK_SIZE 256
+#endif
 
-// CUDA execution configuration
-#define BLOCK_SIZE 256     // Threads per block (should be multiple of 32)
+constexpr int Q = 9;
+__device__ __constant__ int cx_c[Q]   = {0, 1, 0,-1, 0, 1,-1,-1, 1};
+__device__ __constant__ int cy_c[Q]   = {0, 0, 1, 0,-1, 1, 1,-1,-1};
+__device__ __constant__ int opp_c[Q]  = {0, 3, 4, 1, 2, 7, 8, 5, 6};
+__device__ __constant__ float w_c[Q];
+__device__ __constant__ float omega_c;
+__device__ __constant__ float uLid_c;
 
-using namespace std;
+// Utility
+__host__ __device__ inline int idx2d(int x, int y) { return x + y * LX; }
 
-// GPU constant memory for fast access to lattice parameters
-__constant__ float omega_gpu;     // Relaxation parameter
-__constant__ float uLid_gpu;      // Lid velocity
-__constant__ int icx_gpu[_STENCILSIZE_];  // Lattice velocity x-components
-__constant__ int icy_gpu[_STENCILSIZE_];  // Lattice velocity y-components
-__constant__ float w_gpu[_STENCILSIZE_]; // Lattice weights
-__constant__ int opp_gpu[_STENCILSIZE_];  // Opposite directions
+// Kernel 1: collide in-place from f_in -> f_post (both SoA). FP32 math and storage.
+// f[q] planes are sized N = LX*LY
+__global__ void collide_kernel(const float* __restrict__ f_in[Q], float* __restrict__ f_post[Q]) {
+    int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int N = LX * LY;
+    if (gid >= N) return;
 
-/**
- * Device function: Convert 2D grid coordinates to linear array index
- *
- * @param i x-coordinate (0 to _LX_-1)
- * @param j y-coordinate (0 to _LY_-1)
- * @return Linear index for accessing arrays, or _INVALID_ if out of bounds
- */
-__device__ int getGridIdx(int i, int j) {
-    if (i < 0 || i >= _LX_ || j < 0 || j >= _LY_) {
-        return _INVALID_;
+    // Load populations for this node
+    float f[Q];
+    #pragma unroll
+    for (int q = 0; q < Q; ++q) f[q] = f_in[q][gid];
+
+    // Macros
+    float rho = 0.f, ux = 0.f, uy = 0.f;
+    #pragma unroll
+    for (int q = 0; q < Q; ++q) {
+        rho += f[q];
+        ux  += f[q] * (float)cx_c[q];
+        uy  += f[q] * (float)cy_c[q];
     }
-    return i + _LX_ * j;
-}
+    float inv_rho = rho > 0.f ? 1.f / rho : 0.f;
+    ux *= inv_rho; uy *= inv_rho;
 
-/**
- * CUDA Kernel: Collision and Streaming Step
- *
- * Core computational kernel that performs both collision and streaming
- * operations for the entire fluid domain in parallel on the GPU.
- *
- * Each thread handles one lattice site and processes all 9 velocity directions.
- * The kernel combines collision (relaxation to equilibrium) and streaming
- * (movement to neighboring sites) for computational efficiency.
- *
- * @param distr Current distribution functions (input)
- * @param distrAdv New distribution functions after collision+streaming (output)
- * @param stencilOpPt Precomputed streaming destinations
- */
-__global__ void collideStreamKernel(float* distr, float* distrAdv, int* stencilOpPt) {
-    extern __shared__ float shDistr[];
-    // Calculate global thread index (lattice site)
-    int ii = blockIdx.x * blockDim.x + threadIdx.x;
+    const float uke = ux*ux + uy*uy;
+    const float omega = omega_c;
 
-    // Bounds check: ensure thread corresponds to valid lattice site
-    if (ii >= _LX_ * _LY_) return;
-
-    // Calculate 2D coordinates from linear index
-    int myI = ii % _LX_;   // x-coordinate
-    int myJ = ii / _LX_;  // y-coordinate
-
-    // STEP 1: Calculate macroscopic variables from distribution functions
-    float rho = 0.0f;  // Fluid density
-    float ux = 0.0f;   // x-momentum
-    float uy = 0.0f;   // y-momentum
-
-    float* distr_sh = shDistr + threadIdx.x * _STENCILSIZE_;
-
-    // Load distributions into shared memory and compute macroscopic quantities
-    for (int iNbr = 0; iNbr < _STENCILSIZE_; iNbr++) {
-        float fVal = distr[ii * _STENCILSIZE_ + iNbr];
-        distr_sh[iNbr] = fVal;
-        rho += fVal;                        // ρ = Σ f_i
-        ux += fVal * icx_gpu[iNbr];         // ρu_x = Σ f_i * c_ix
-        uy += fVal * icy_gpu[iNbr];         // ρu_y = Σ f_i * c_iy
-    }
-
-    // Convert momentum to velocity
-    float orho = 1.0f / rho;
-    ux *= orho;
-    uy *= orho;
-    float uke = ux * ux + uy * uy;  // Kinetic energy |u|²
-
-    // STEP 2: Collision and Streaming
-    for (int iNbr = 0; iNbr < _STENCILSIZE_; iNbr++) {
-        // Streaming destination
-        int nbrInd = stencilOpPt[ii * _STENCILSIZE_ + iNbr];
-
-        // Lattice velocity dot product with fluid velocity
-        float cdotu = icx_gpu[iNbr] * ux + icy_gpu[iNbr] * uy;
-
-        // Equilibrium distribution (Maxwell-Boltzmann, 2nd order)
-        float distr_eq = w_gpu[iNbr] * rho * (1.0f + 3.0f*cdotu + 4.5f*cdotu*cdotu - 1.5f*uke);
-
-        // BGK collision + streaming (read original populations from shared memory)
-        distrAdv[nbrInd] = omega_gpu * distr_eq + (1.0f - omega_gpu) * distr_sh[iNbr];
+    // BGK collide
+    #pragma unroll
+    for (int q = 0; q < Q; ++q) {
+        const float cu = 3.f * (cx_c[q]*ux + cy_c[q]*uy);
+        const float cu2 = 0.5f * cu * cu;          // 9/2 * (e·u)^2 with 3 factored in above -> 0.5*(3e·u)^2
+        const float uu = 1.5f * uke;               // 3/2 |u|^2
+        const float w = w_c[q];
+        const float feq = w * rho * (1.f + cu + cu2 - uu);
+        const float fout = f[q] + omega * (feq - f[q]);
+        f_post[q][gid] = fout;
     }
 }
 
-/**
- * CUDA Kernel: Zou-He Boundary Condition for Moving Lid
- *
- * Applies velocity boundary condition on the top wall (moving lid) using
- * the Zou-He method. Each thread handles one lattice site along the top boundary.
- *
- * The Zou-He method extrapolates density from the bulk fluid and reconstructs
- * unknown distribution functions to satisfy the prescribed velocity.
- *
- * @param distr Distribution functions to modify
- */
-__global__ void zouHeBCKernel(float* distr) {
-    // Each thread handles one x-coordinate along the top boundary
-    int myI = blockIdx.x * blockDim.x + threadIdx.x;
+// Kernel 2: pull streaming with on-the-fly neighbor index and walls.
+// Writes into f_out. Handles bounce-back on left/right/bottom and Zou–He moving lid on top (y=LY-1).
+__global__ void stream_bc_kernel(const float* __restrict__ f_post[Q], float* __restrict__ f_out[Q]) {
+    int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int N = LX * LY;
+    if (gid >= N) return;
 
-    // Bounds check
-    if (myI >= _LX_) return;
+    const int x = gid % LX;
+    const int y = gid / LX;
 
-    int myJ = 0; // Top boundary (y = 0)
-    int idxIJ = getGridIdx(myI, myJ);
+    // For each direction q, we pull from neighbor at (x - cx[q], y - cy[q])
+    #pragma unroll
+    for (int q = 0; q < Q; ++q) {
+        const int xn = x - cx_c[q];
+        const int yn = y - cy_c[q];
+        float val;
 
-    // Prescribed boundary velocities
-    float ux = uLid_gpu;  // Horizontal lid velocity
-    float uy = 0.0f;       // No vertical velocity
+        if (xn >= 0 && xn < LX && yn >= 0 && yn < LY) {
+            val = f_post[q][idx2d(xn, yn)];
+        } else {
+            // Boundary handling: which boundary are we crossing?
+            const int qo = opp_c[q];
 
-    // Extrapolate density using Zou-He formula
-    float rho = (1.0f/(1.0f-uy)) * (distr[idxIJ*_STENCILSIZE_+0] +
-                                   distr[idxIJ*_STENCILSIZE_+1] +
-                                   distr[idxIJ*_STENCILSIZE_+3] +
-                                   2*(distr[idxIJ*_STENCILSIZE_+4] +
-                                      distr[idxIJ*_STENCILSIZE_+7] +
-                                      distr[idxIJ*_STENCILSIZE_+8]));
+            // Top moving lid at y = LY-1. We cross top if yn == LY.
+            if (yn == LY) {
+                // Zou–He moving lid, ux = uLid, uy = 0
+                const float uLid = uLid_c;
 
-    // Reconstruct unknown distributions
-    distr[idxIJ*_STENCILSIZE_+2] = distr[idxIJ*_STENCILSIZE_+4] + (2.0f/3.0f)*rho*uy;
+                // Load known post-collision values at boundary node (current cell)
+                float f0 = f_post[0][gid];
+                float f1 = f_post[1][gid];
+                float f3 = f_post[3][gid];
+                float f4 = f_post[4][gid];
+                float f7 = f_post[7][gid];
+                float f8 = f_post[8][gid];
 
-    distr[idxIJ*_STENCILSIZE_+5] = distr[idxIJ*_STENCILSIZE_+7] -
-                                   (1.0f/2.0f)*(distr[idxIJ*_STENCILSIZE_+1] - distr[idxIJ*_STENCILSIZE_+3]) +
-                                   (1.0f/2.0f)*rho*ux - (1.0f/6.0f)*rho*uy;
+                // Zou–He density closure with uy=0 at top:
+                // rho = f0 + f1 + f3 + 2*(f4 + f7 + f8)  (standard lid BC)
+                const float rho = f0 + f1 + f3 + 2.f * (f4 + f7 + f8);
 
-    distr[idxIJ*_STENCILSIZE_+6] = distr[idxIJ*_STENCILSIZE_+8] +
-                                   (1.0f/2.0f)*(distr[idxIJ*_STENCILSIZE_+1] - distr[idxIJ*_STENCILSIZE_+3]) -
-                                   (1.0f/2.0f)*rho*ux - (1.0f/6.0f)*rho*uy;
+                float f2 = f4;                       // uy=0
+                float f5 = f7 + 0.5f*(f1 - f3) + (1.f/3.f)*rho * uLid;
+                float f6 = f8 + 0.5f*(f3 - f1) - (1.f/3.f)*rho * uLid;
+
+                if (q == 2)      val = f2;
+                else if (q == 5) val = f5;
+                else if (q == 6) val = f6;
+                else              val = f_post[q][gid]; // not expected, but keep safe
+            }
+            // Bottom wall y = 0, cross bottom if yn == -1
+            else if (yn == -1) {
+                val = f_post[qo][gid]; // bounce-back
+            }
+            // Left wall x = 0, cross left if xn == -1
+            else if (xn == -1) {
+                val = f_post[qo][gid];
+            }
+            // Right wall x = LX-1, cross right if xn == LX
+            else if (xn == LX) {
+                val = f_post[qo][gid];
+            }
+            else {
+                // Should not happen
+                val = f_post[qo][gid];
+            }
+        }
+        f_out[q][gid] = val;
+    }
 }
 
-/**
- * Host function: Write simulation results to output file
- *
- * Transfers final results from GPU to CPU and calculates macroscopic
- * quantities for output. Results written in CSV format.
- */
-void writeOutput(float* distr_gpu, int* icx, int* icy) {
-    // Allocate host memory for results
-    float* distr_host = new float[_LX_ * _LY_ * _STENCILSIZE_];
+// Dump macroscopic fields to CSV (host-side accumulation)
+static void write_output(const std::vector<float*>& f_dev, const int LXh, const int LYh) {
+    const int N = LXh * LYh;
+    std::vector<float> h(Q * N);
+    for (int q = 0; q < Q; ++q) cudaMemcpy(h.data() + q*N, f_dev[q], N*sizeof(float), cudaMemcpyDeviceToHost);
 
-    // Transfer results from GPU to CPU
-    cudaMemcpy(distr_host, distr_gpu, _LX_ * _LY_ * _STENCILSIZE_ * sizeof(float), cudaMemcpyDeviceToHost);
-
-    // Open output file
-    std::ofstream out_file("out.txt");
-
-    // Process each lattice site
-    for (int idxI = 0; idxI < _LX_; idxI++) {
-        for (int idxJ = 0; idxJ < _LY_; idxJ++) {
-            int idxIJ = idxI + _LX_ * idxJ;
-
-            // Calculate macroscopic quantities
-            float rho = 0.0f;
-            float ux = 0.0f;
-            float uy = 0.0f;
-
-            for (int iNbr = 0; iNbr < _STENCILSIZE_; iNbr++) {
-                float f = distr_host[idxIJ * _STENCILSIZE_ + iNbr];
+    std::ofstream out("out.csv");
+    out << std::setprecision(16);
+    for (int y = 0; y < LYh; ++y) {
+        for (int x = 0; x < LXh; ++x) {
+            int i = idx2d(x,y);
+            double rho = 0.0, ux = 0.0, uy = 0.0;
+            for (int q = 0; q < Q; ++q) {
+                double f = (double)h[q*N + i];
                 rho += f;
-                ux += f * icx[iNbr];
-                uy += f * icy[iNbr];
+                ux  += f * cx_c[q];
+                uy  += f * cy_c[q];
             }
-
-            // Convert to velocity
-            ux /= rho;
-            uy /= rho;
-
-            // Write to file
-            out_file << std::setprecision(16) << idxI << ", " << idxJ << ", "
-                     << ux << ", " << uy << ", " << rho << std::endl;
+            ux /= rho; uy /= rho;
+            out << x << ',' << y << ',' << ux << ',' << uy << ',' << rho << '\n';
         }
     }
-
-    out_file.close();
-    delete[] distr_host;
+    out.close();
 }
 
-/**
- * Host function: Setup streaming adjacency table
- *
- * Precomputes where each distribution function will stream to,
- * implementing both fluid streaming and bounce-back boundary conditions.
- */
-void setupAdjacency(int* stencilOpPt, int* icx, int* icy, int* opp) {
-    for (int ii = 0; ii < _LX_ * _LY_; ii++) {
-        int myI = ii % _LX_;
-        int myJ = ii / _LX_;
-
-        for (int iNbr = 0; iNbr < _STENCILSIZE_; iNbr++) {
-            int nbrI = myI + icx[iNbr];
-            int nbrJ = myJ + icy[iNbr];
-
-            // Check bounds
-            if (nbrI < 0 || nbrI >= _LX_ || nbrJ < 0 || nbrJ >= _LY_) {
-                // Bounce-back boundary condition
-                stencilOpPt[ii * _STENCILSIZE_ + iNbr] = ii * _STENCILSIZE_ + opp[iNbr];
-            } else {
-                // Normal streaming
-                int nbrIJ = nbrI + _LX_ * nbrJ;
-                stencilOpPt[ii * _STENCILSIZE_ + iNbr] = nbrIJ * _STENCILSIZE_ + iNbr;
-            }
-        }
+static void checkCuda(cudaError_t e, const char* msg) {
+    if (e != cudaSuccess) {
+        fprintf(stderr, "CUDA error %s: %s\n", msg, cudaGetErrorString(e));
+        std::abort();
     }
 }
 
-/**
- * Host function: Initialize fluid to equilibrium state
- */
-void initializeFluid(float* distr_gpu, float* w) {
-    // Create host array for initialization
-    float* distr_host = new float[_LX_ * _LY_ * _STENCILSIZE_];
-
-    // Initialize to equilibrium (fluid at rest, unit density)
-    for (int ii = 0; ii < _LX_ * _LY_; ii++) {
-        for (int iNbr = 0; iNbr < _STENCILSIZE_; iNbr++) {
-            distr_host[ii * _STENCILSIZE_ + iNbr] = w[iNbr];
-        }
-    }
-
-    // Transfer to GPU
-    cudaMemcpy(distr_gpu, distr_host, _LX_ * _LY_ * _STENCILSIZE_ * sizeof(float), cudaMemcpyHostToDevice);
-
-    delete[] distr_host;
-}
-
-/**
- * MAIN PROGRAM: Single-GPU CUDA Cavity Flow Simulation
- */
 int main() {
-    // =============================================================================
-    // SIMULATION PARAMETERS
-    // =============================================================================
-    int maxT = 100;        // Total time steps
-    float uLid = 0.05f;      // Lid velocity
-    float Re = 100.0f;       // Reynolds number
+    const int N = LX * LY;
 
-    // LBM parameters
-    float cs2 = 1.0f/3.0f;
-    float nu = uLid * _LX_ / Re;
-    float omega = 1.0f / (3.0f*nu + 0.5f);
+    // Host weights
+    const float w_h[Q] = {4.f/9.f, 1.f/9.f, 1.f/9.f, 1.f/9.f, 1.f/9.f,
+                          1.f/36.f,1.f/36.f,1.f/36.f,1.f/36.f};
 
-    // =============================================================================
-    // D2Q9 LATTICE CONSTANTS
-    // =============================================================================
-    int icx[_STENCILSIZE_] = {0,1,0,-1,0,1,-1,-1,1};
-    int icy[_STENCILSIZE_] = {0,0,1,0,-1,1,1,-1,-1};
-    int opp[_STENCILSIZE_] = {0,3,4,1,2,7,8,5,6};
-    float w[_STENCILSIZE_] = {4.0f/9.0f,1.0f/9.0f,1.0f/9.0f,1.0f/9.0f,1.0f/9.0f,
-                              1.0f/36.0f,1.0f/36.0f,1.0f/36.0f,1.0f/36.0f};
+    // Params
+    const double uLid = 0.05;
+    const double Re   = 100.0;
+    const double nu   = uLid * LX / Re;
+    const double omega = 1.0 / (3.0*nu + 0.5);
 
-    // =============================================================================
-    // GPU MEMORY ALLOCATION
-    // =============================================================================
-    cout << "Initializing CUDA Cavity Flow Simulation..." << endl;
-    cout << "Grid size: " << _LX_ << "x" << _LY_ << endl;
-    cout << "Reynolds number: " << Re << endl;
-    cout << "Lid velocity: " << uLid << endl;
-    cout << "Relaxation parameter: " << omega << endl;
-    cout << "Time steps: " << maxT << endl << endl;
+    float w_d[Q];
+    for (int q = 0; q < Q; ++q) w_d[q] = w_h[q];
+    checkCuda(cudaMemcpyToSymbol(w_c, w_d, sizeof(w_d)), "cpy w");
+    float omega_h = (float)omega;
+    float uLid_h  = (float)uLid;
+    checkCuda(cudaMemcpyToSymbol(omega_c, &omega_h, sizeof(float)), "cpy omega");
+    checkCuda(cudaMemcpyToSymbol(uLid_c, &uLid_h, sizeof(float)), "cpy uLid");
 
-    // GPU memory allocation
-    float* distr_gpu;
-    float* distrAdv_gpu;
-    int* stencilOpPt_gpu;
+    // Allocate SoA planes
+    std::vector<float*> f0(Q), f1(Q), f2(Q); // ping-pong buffers (in, post, out)
+    for (int q = 0; q < Q; ++q) {
+        checkCuda(cudaMalloc(&f0[q], N*sizeof(float)), "malloc f0");
+        checkCuda(cudaMalloc(&f1[q], N*sizeof(float)), "malloc f1");
+        checkCuda(cudaMalloc(&f2[q], N*sizeof(float)), "malloc f2");
+    }
 
-    size_t distr_size = _LX_ * _LY_ * _STENCILSIZE_ * sizeof(float);
-    size_t stencil_size = _LX_ * _LY_ * _STENCILSIZE_ * sizeof(int);
+    // Init to equilibrium at rest: f = w
+    {
+        std::vector<float> tmp(N);
+        for (int q = 0; q < Q; ++q) {
+            std::fill(tmp.begin(), tmp.end(), w_d[q]);
+            checkCuda(cudaMemcpy(f0[q], tmp.data(), N*sizeof(float), cudaMemcpyHostToDevice), "init f0");
+        }
+    }
 
-    cudaMalloc(&distr_gpu, distr_size);
-    cudaMalloc(&distrAdv_gpu, distr_size);
-    cudaMalloc(&stencilOpPt_gpu, stencil_size);
+    const int threads = BLOCK_SIZE;
+    const int blocks = (N + threads - 1) / threads;
 
-    // Copy constants to GPU constant memory
-    cudaMemcpyToSymbol(omega_gpu, &omega, sizeof(float));
-    cudaMemcpyToSymbol(uLid_gpu, &uLid, sizeof(float));
-    cudaMemcpyToSymbol(icx_gpu, icx, _STENCILSIZE_ * sizeof(int));
-    cudaMemcpyToSymbol(icy_gpu, icy, _STENCILSIZE_ * sizeof(int));
-    cudaMemcpyToSymbol(w_gpu, w, _STENCILSIZE_ * sizeof(float));
-    cudaMemcpyToSymbol(opp_gpu, opp, _STENCILSIZE_ * sizeof(int));
+    // Prepare device arrays of plane pointers (so kernels can index f[q])
+    float** f0_dev; float** f1_dev; float** f2_dev;
+    checkCuda(cudaMalloc(&f0_dev, Q*sizeof(float*)), "malloc f0_dev");
+    checkCuda(cudaMalloc(&f1_dev, Q*sizeof(float*)), "malloc f1_dev");
+    checkCuda(cudaMalloc(&f2_dev, Q*sizeof(float*)), "malloc f2_dev");
 
-    // =============================================================================
-    // INITIALIZATION
-    // =============================================================================
-    // Setup streaming adjacency on host
-    int* stencilOpPt_host = new int[_LX_ * _LY_ * _STENCILSIZE_];
-    setupAdjacency(stencilOpPt_host, icx, icy, opp);
-    cudaMemcpy(stencilOpPt_gpu, stencilOpPt_host, stencil_size, cudaMemcpyHostToDevice);
+    checkCuda(cudaMemcpy(f0_dev, f0.data(), Q*sizeof(float*), cudaMemcpyHostToDevice), "cpy f0_dev");
+    checkCuda(cudaMemcpy(f1_dev, f1.data(), Q*sizeof(float*), cudaMemcpyHostToDevice), "cpy f1_dev");
+    checkCuda(cudaMemcpy(f2_dev, f2.data(), Q*sizeof(float*), cudaMemcpyHostToDevice), "cpy f2_dev");
 
-    // Initialize fluid distributions
-    initializeFluid(distr_gpu, w);
-
-    // CUDA execution configuration
-    int numSites = _LX_ * _LY_;
-    int numBlocks = (numSites + BLOCK_SIZE - 1) / BLOCK_SIZE;
-
-    int numBlocksBC = (_LX_ + BLOCK_SIZE - 1) / BLOCK_SIZE;  // For boundary condition
-
-    cout << "CUDA Configuration:" << endl;
-    cout << "Threads per block: " << BLOCK_SIZE << endl;
-    cout << "Blocks for collision: " << numBlocks << endl;
-    cout << "Blocks for boundary: " << numBlocksBC << endl << endl;
-
-    // =============================================================================
-    // MAIN SIMULATION LOOP
-    // =============================================================================
-    cout << "Starting CUDA simulation..." << endl;
-
+    // Time stepping
+    const int maxT = 2; // set real steps for performance measurement
     // Timing
     struct timeval start_time, end_time;
     gettimeofday(&start_time, NULL);
 
-    for (int t = 0; t < maxT; t++) {
-        // Step 1: Collision + Streaming kernel
-        size_t shmemSize = BLOCK_SIZE * _STENCILSIZE_ * sizeof(float);
-        collideStreamKernel<<<numBlocks, BLOCK_SIZE, shmemSize>>>(distr_gpu, distrAdv_gpu, stencilOpPt_gpu);
+    for (int t = 0; t < maxT; ++t) {
+        // collide: f0 -> f1
+        collide_kernel<<<blocks, threads>>>((const float**)f0_dev, (float**)f1_dev);
+        // stream+BC: f1 -> f2
+        stream_bc_kernel<<<blocks, threads>>>((const float**)f1_dev, (float**)f2_dev);
+        checkCuda(cudaGetLastError(), "kernels");
 
-        // Step 2: Boundary condition kernel
-        zouHeBCKernel<<<numBlocksBC, BLOCK_SIZE>>>(distrAdv_gpu);
-
-        // Step 3: Swap arrays (ping-pong)
-        float* temp = distr_gpu;
-        distr_gpu = distrAdv_gpu;
-        distrAdv_gpu = temp;
-
-        // Progress output
-        if (t % 1000 == 0) {
-            cout << "Completed " << t << " / " << maxT << " time steps" << endl;
-        }
+        // Rotate buffers: f2 becomes next f0
+        std::swap(f0, f2);
+        checkCuda(cudaMemcpy(f0_dev, f0.data(), Q*sizeof(float*), cudaMemcpyHostToDevice), "swap f0_dev");
+        checkCuda(cudaMemcpy(f2_dev, f2.data(), Q*sizeof(float*), cudaMemcpyHostToDevice), "swap f2_dev");
     }
-
-    // Wait for GPU to finish
-    cudaDeviceSynchronize();
+    checkCuda(cudaDeviceSynchronize(), "sync");
 
     gettimeofday(&end_time, NULL);
-    float elapsed_time = (end_time.tv_sec - start_time.tv_sec) +
-                         (end_time.tv_usec - start_time.tv_usec) / 1000000.0f;
+    double elapsed_time = (end_time.tv_sec - start_time.tv_sec) +
+                         (end_time.tv_usec - start_time.tv_usec) / 1000000.0;
 
-    long total_updates = (long)_LX_ * _LY_ * maxT;
-    float mflups = total_updates / elapsed_time / 1000000.0f;
+    long total_updates = (long)LX * LY * maxT;
+    double mflups = total_updates / elapsed_time / 1000000.0;
 
-    cout << "Simulation completed!" << endl;
-    cout << "Elapsed time: " << elapsed_time << " seconds" << endl;
-    cout << "Performance: " << mflups << " MFLUPS" << endl;
+    std::cout << "Simulation completed!" << std::endl;
+    std::cout << "Elapsed time: " << elapsed_time << " seconds" << std::endl;
+    std::cout << "Performance: " << mflups << " MFLUPS" << std::endl;
 
-    // =============================================================================
-    // OUTPUT RESULTS
-    // =============================================================================
-    cout << "Writing results to out.txt..." << endl;
-    writeOutput(distr_gpu, icx, icy);
-    cout << "Done!" << endl;
+    // Output
+    write_output(f0, LX, LY);
 
-    // =============================================================================
-    // CLEANUP
-    // =============================================================================
-    cudaFree(distr_gpu);
-    cudaFree(distrAdv_gpu);
-    cudaFree(stencilOpPt_gpu);
-    delete[] stencilOpPt_host;
+    // Cleanup
+    for (int q = 0; q < Q; ++q) { cudaFree(f0[q]); cudaFree(f1[q]); cudaFree(f2[q]); }
+    cudaFree(f0_dev); cudaFree(f1_dev); cudaFree(f2_dev);
 
     return 0;
 }
